@@ -8,6 +8,8 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 import os
 import shutil
 from faker import Faker
+import pandas as pd
+import matplotlib.pyplot as plt
 
 
 OUTPUT_DIR = "/opt/airflow/data"
@@ -174,6 +176,59 @@ with DAG(
             conn.close()
 
     @task()
+    def analyze_and_visualize(
+        conn_id: str,
+        schema: str = "week8_demo",
+        table: str = "employees",
+        output_dir: str = OUTPUT_DIR,
+    ) -> str:
+        """
+        Fetch data from Postgres, perform simple analysis, and save a visualization.
+        """
+
+        # Get connection from Airflow
+        hook = PostgresHook(postgres_conn_id=conn_id)
+        sql_query = f"SELECT * FROM {schema}.{table};"
+        df = hook.get_pandas_df(sql_query)
+
+        if df.empty:
+            print("No data available in the table for analysis.")
+            return ""
+
+        # Example analysis: count by company_name
+        if "company_name" in df.columns:
+            company_counts = df["company_name"].value_counts().head(10)
+            plt.figure(figsize=(10, 6))
+            company_counts.plot(kind="bar", color="skyblue")
+            plt.title("Top 10 Companies by Record Count")
+            plt.xlabel("Company Name")
+            plt.ylabel("Count")
+            plt.xticks(rotation=45, ha="right")
+            plt.tight_layout()
+
+            os.makedirs(output_dir, exist_ok=True)
+            plot_path = os.path.join(output_dir, "top_companies.png")
+            plt.savefig(plot_path)
+            plt.close()
+            print(f"Visualization saved to {plot_path}")
+            return plot_path
+
+        # If no company_name column, show first-name frequencies
+        counts = df["firstname"].value_counts().head(10)
+        plt.figure(figsize=(8, 5))
+        counts.plot(kind="bar", color="coral")
+        plt.title("Top 10 First Names")
+        plt.xlabel("Name")
+        plt.ylabel("Frequency")
+        plt.xticks(rotation=45, ha="right")
+        plt.tight_layout()
+        plot_path = os.path.join(output_dir, "name_distribution.png")
+        plt.savefig(plot_path)
+        plt.close()
+        print(f"Visualization saved to {plot_path}")
+        return plot_path
+
+    @task()
     def clear_folder(folder_path: str = "/opt/airflow/data") -> None:
         """
         Delete all files and subdirectories inside a folder.
@@ -206,6 +261,18 @@ with DAG(
         conn_id="Postgres", csv_path=merged_path, table=TARGET_TABLE
     )
 
+    analyze_plot = analyze_and_visualize(
+        conn_id="Postgres", table=TARGET_TABLE, output_dir=OUTPUT_DIR
+    )
+
     clean_folder = clear_folder(folder_path=OUTPUT_DIR)
 
-    load_to_database >> clean_folder
+    # Define execution order
+    (
+        persons_file
+        >> companies_file
+        >> merged_path
+        >> load_to_database
+        >> analyze_plot
+        >> clean_folder
+    )
